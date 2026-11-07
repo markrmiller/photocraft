@@ -147,6 +147,7 @@ fn menu_rows_show_the_shortcut_that_runs_them() {
 /// documents gains a row, which rebuilds only the Window menu.
 #[test]
 fn opening_a_document_changes_state_not_structure() {
+    let _registry = crate::menus::plugin_ui::registry_guard();
     let (a, b) = (crate::menus::menu_items(&app(false)), crate::menus::menu_items(&app(true)));
     let kind = |items: &[MenuItem]| items.iter().map(|i| (i.id.clone(), i.checked.is_some())).collect::<HashMap<_, _>>();
     let (ka, kb) = (kind(&a), kind(&b));
@@ -161,6 +162,7 @@ fn opening_a_document_changes_state_not_structure() {
 /// the active one checked. Switching documents moves the check without a rebuild.
 #[test]
 fn the_documents_follow_bring_all_to_front() {
+    let _registry = crate::menus::plugin_ui::registry_guard();
     let none = ids(&layout(false).bar.menu(MenuRole::Window).unwrap().children);
     assert_eq!(none.last().map(String::as_str), Some("<BringAllToFront>"));
 
@@ -177,6 +179,29 @@ fn the_documents_follow_bring_all_to_front() {
     let switched = photocraft_layout(&crate::menus::menu_items(&a), Lang::EN, "auto").bar;
     assert_eq!(switched.find("window.document.0").and_then(|i| i.checked), Some(true));
     assert_eq!((structure_key(&switched), window_key(&switched)), (structure_key(&bar), window_key(&bar)), "a check moves in place");
+}
+
+/// The guard those two tests hold keeps a plug-in install out from between their menu builds:
+/// an install on another thread waits for it, however far apart the builds are.
+#[test]
+fn a_plugin_install_waits_for_a_test_comparing_menu_builds() {
+    let guard = crate::menus::plugin_ui::registry_guard();
+    let before = structure_key(&layout(false).bar);
+    let had_row = layout(false).bar.find("plugin.filter.org.photocraft.example.invert").is_some();
+    let (started, waiting) = std::sync::mpsc::channel();
+    let installer = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        let _registry = crate::menus::plugin_ui::registry_guard();
+        photocraft_plugins::registry::install_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/tests/fixtures/invert.wasm"))).unwrap();
+    });
+    waiting.recv().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_eq!(structure_key(&layout(false).bar), before, "no plug-in row appeared between the builds");
+    drop(guard);
+    installer.join().unwrap();
+    if !had_row {
+        assert_ne!(structure_key(&layout(false).bar), before, "the install does change the menus");
+    }
 }
 
 #[test]
